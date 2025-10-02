@@ -36,6 +36,148 @@
         } catch (e) { /* ignore */ }
     }
 
+    // Query GBIF for a name (species or genus). Try full name first, fall back to genus-only.
+    async function fetchGbifForName(name) {
+        if (!name) return { family: null, order: null, class: null, scientific: name, confidence: 0 };
+        const key = name.toLowerCase();
+        if (cache.has(key)) {
+            return cache.get(key);
+        }
+        // helper: normalize by removing author, extra parens, and limiting to two words
+        function normalizeName(n) {
+            if (!n) return n;
+            // remove HTML entities/spans etc
+            n = n.replace(/<[^>]+>/g, '');
+            // remove content inside parentheses (authors)
+            n = n.replace(/\([^)]*\)/g, '');
+            // collapse whitespace
+            n = n.replace(/\s+/g, ' ').trim();
+            // remove trailing commas
+            n = n.replace(/,$/, '');
+            // split into parts
+            const parts = n.split(/\s+/);
+            // Handle repeated genus: if first two tokens are identical (case-insensitive), skip the first
+            // e.g., "Panthera Panthera pardus" -> "Panthera pardus"
+            if (parts.length >= 3 && parts[0].toLowerCase() === parts[1].toLowerCase()) {
+                return `${parts[1]} ${parts[2]}`;
+            }
+            // limit to genus + species (first two tokens)
+            if (parts.length >= 2) return `${parts[0]} ${parts[1]}`;
+            return parts[0] || n;
+        }
+
+        function removeDiacritics(str) {
+            if (!str) return str;
+            return str.normalize('NFD').replace(/\p{Diacritic}/gu, '');
+        }
+
+        const normalized = removeDiacritics(normalizeName(name));
+        try {
+            // First try the full name
+            const fullUrl = GBIF_MATCH + '?name=' + encodeURIComponent(normalized);
+            console.debug('GBIF: querying match for', normalized, 'original:', name);
+            const fullResp = await fetch(fullUrl);
+            if (fullResp.ok) {
+                const js = await fullResp.json();
+                console.debug('GBIF match response for', normalized, js);
+                // If we got family/order/class from this match, use it
+                if (js.family || js.order || js.class) {
+                    const out = { family: js.family || null, order: js.order || null, class: js.class || null, scientific: js.scientificName || name, confidence: js.confidence || 0 };
+                    cache.set(key, out);
+                    saveCache();
+                    return out;
+                }
+                // follow acceptedUsageKey or acceptedKey if present
+                if (js.synonym && js.acceptedUsageKey) {
+                    const accUrl = `${GBIF_SPECIES}/${js.acceptedUsageKey}`;
+                    const accResp = await fetch(accUrl);
+                    if (accResp.ok) {
+                        const accJs = await accResp.json();
+                        const out = { family: accJs.family || null, order: accJs.order || null, class: accJs.class || null, scientific: accJs.scientificName || name, confidence: 90 };
+                        cache.set(key, out);
+                        saveCache();
+                        return out;
+                    }
+                }
+                if (js.matchType === 'NONE' && js.acceptedKey) {
+                    const accUrl = `${GBIF_SPECIES}/${js.acceptedKey}`;
+                    const accResp = await fetch(accUrl);
+                    if (accResp.ok) {
+                        const accJs = await accResp.json();
+                        const out = { family: accJs.family || null, order: accJs.order || null, class: accJs.class || null, scientific: accJs.scientificName || name, confidence: 85 };
+                        cache.set(key, out);
+                        saveCache();
+                        return out;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('GBIF full-name fetch error for', name, e);
+        }
+        // If full name didn't give us family/order/class, try a species search as a fallback
+        try {
+            const searchUrl = `https://api.gbif.org/v1/species/search?q=${encodeURIComponent(normalized)}&limit=5`;
+            console.debug('GBIF: searching species for', normalized, searchUrl);
+            const sResp = await fetch(searchUrl);
+            if (sResp.ok) {
+                const sJs = await sResp.json();
+                console.debug('GBIF search results for', normalized, sJs);
+                if (sJs && Array.isArray(sJs.results) && sJs.results.length > 0) {
+                    // prefer exact canonicalName matches
+                    let candidate = sJs.results.find(r => (r.canonicalName && r.canonicalName.toLowerCase() === normalized.toLowerCase()) || (r.scientificName && r.scientificName.toLowerCase() === normalized.toLowerCase()));
+                    if (!candidate) {
+                        // Otherwise, try to pick a candidate that matches the original genus (if present) and is a mammal/species
+                        const originalGenus = normalized.split(/\s+/)[0].toLowerCase();
+                        const genusMatches = sJs.results.filter(r => r.genus && r.genus.toLowerCase() === originalGenus && r.rank === 'SPECIES');
+                        if (genusMatches.length > 0) candidate = genusMatches[0];
+                    }
+                    if (!candidate) {
+                        // Prefer candidates from the same genus (already done), otherwise prefer candidates
+                        // from the most common class among the search results (mode), favoring rank=SPECIES and ACCEPTED
+                        const classCounts = {};
+                        sJs.results.forEach(r => {
+                            if (r.class) {
+                                const c = String(r.class).toLowerCase();
+                                classCounts[c] = (classCounts[c] || 0) + 1;
+                            }
+                        });
+                        const classMode = Object.keys(classCounts).sort((a,b) => classCounts[b]-classCounts[a])[0];
+                        if (classMode) {
+                            const classCandidates = sJs.results.filter(r => r.class && String(r.class).toLowerCase() === classMode && r.rank === 'SPECIES' && r.taxonomicStatus && r.taxonomicStatus.toUpperCase() === 'ACCEPTED');
+                            if (classCandidates.length > 0) candidate = classCandidates[0];
+                        }
+                    }
+                    if (!candidate) candidate = sJs.results.find(r => r.rank === 'SPECIES' && r.taxonomicStatus && r.taxonomicStatus.toUpperCase() === 'ACCEPTED') || sJs.results[0];
+                    if (candidate && candidate.key) {
+                        console.debug('GBIF: chosen search candidate', candidate.key, candidate.canonicalName || candidate.scientificName, candidate.class, candidate.family, candidate.score);
+                        const detailUrl = `${GBIF_SPECIES}/${candidate.key}`;
+                        const dResp = await fetch(detailUrl);
+                        if (dResp.ok) {
+                            const dJs = await dResp.json();
+                            const out = { family: dJs.family || null, order: dJs.order || null, class: dJs.class || null, scientific: dJs.scientificName || candidate.canonicalName || name, confidence: candidate.score || 80 };
+                            cache.set(key, out);
+                            saveCache();
+                            return out;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('GBIF search fallback error for', name, e);
+        }
+
+        // If species search didn't help, fall back to genus-only
+        const genus = normalized.trim().split(/\s+/)[0];
+        if (genus && genus.toLowerCase() !== name.toLowerCase()) {
+            // try genus lookup using existing logic
+            return await fetchGbifForGenus(genus);
+        }
+        const empty = { family: null, order: null, class: null, scientific: name, confidence: 0 };
+        cache.set(key, empty);
+        saveCache();
+        return empty;
+    }
+
     // Query GBIF for a genus name, return {family, order, class, scientificName, confidence}
     async function fetchGbifForGenus(genus) {
         const key = genus.toLowerCase();
@@ -261,7 +403,8 @@
                     continue;
                 }
 
-                const info = await fetchGbifForGenus(genus);
+                // prefer full taxonomy string when available to get species-level matches
+                const info = await fetchGbifForName(tax || genus);
 
                 // attach next to the taxonomy dd (reuse earlier found dd if possible)
                 const dt = Array.from(item.querySelectorAll('dt')).find(d => d.textContent && d.textContent.trim().startsWith('Taxonomy'));
@@ -300,7 +443,7 @@
                     const genus = getGenusFromTaxonomy(taxText);
                     if (!genus) continue;
 
-                    const info = await fetchGbifForGenus(genus);
+                    const info = await fetchGbifForName(taxText || genus);
                     attachExtended(dd, info);
                     try { if (parentLi) parentLi.dataset.msGbif = '1'; } catch (e) { /* ignore */ }
                 } catch (e) { /* ignore per-dt errors */ }
@@ -330,7 +473,7 @@
                     const taxText = (valueDiv.querySelector('i') ? valueDiv.querySelector('i').textContent.trim() : valueDiv.textContent.trim());
                     const genus = getGenusFromTaxonomy(taxText);
                     if (!genus) continue;
-                    const info = await fetchGbifForGenus(genus);
+                    const info = await fetchGbifForName(taxText || genus);
                     attachExtendedRow(labelDiv, valueDiv, info);
                 } catch (e) { /* ignore per-label errors */ }
             }
