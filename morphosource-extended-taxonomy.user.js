@@ -313,6 +313,11 @@
             
             // Insert all rows after the taxonomy dd node
             if (node.parentNode && rowsToInsert.length > 0) {
+                // mark node and any italic child as processed to avoid duplicate inline annotations
+                if (node.dataset) node.dataset.msGbif = '1';
+                const italic = node.querySelector && node.querySelector('i');
+                if (italic && italic.dataset) italic.dataset.msGbif = '1';
+
                 let insertAfter = node;
                 rowsToInsert.forEach(row => {
                     insertAfter.parentNode.insertBefore(row, insertAfter.nextSibling);
@@ -371,6 +376,11 @@
                 insertAfter.parentNode.insertBefore(r, insertAfter.nextSibling);
                 insertAfter = r;
             });
+
+            // Mark value div and italic (if any) as processed to avoid inline duplicates
+            if (valueDiv && valueDiv.dataset) valueDiv.dataset.msGbif = '1';
+            const italic = valueDiv && valueDiv.querySelector && valueDiv.querySelector('i');
+            if (italic && italic.dataset) italic.dataset.msGbif = '1';
         } catch (e) {
             console.error('attachExtendedRow error', e);
         }
@@ -398,6 +408,11 @@
 
             container.innerHTML = parts.join('<br>');
             cell.appendChild(container);
+
+            // mark cell and italic (if any) as processed
+            if (cell.dataset) cell.dataset.msGbif = '1';
+            const italic = cell.querySelector && cell.querySelector('i');
+            if (italic && italic.dataset) italic.dataset.msGbif = '1';
         } catch (e) {
             console.error('attachExtendedToCell error', e);
         }
@@ -441,6 +456,7 @@
             }
 
             try { italicEl.dataset.msGbif = '1'; } catch (e) { /* ignore */ }
+            if (parent && parent.dataset) parent.dataset.msGbif = '1';
         } catch (e) {
             console.error('attachExtendedInline error', e);
         }
@@ -610,6 +626,8 @@
                     if (!it.textContent) continue;
                     // Skip if already handled
                     if (it.dataset && it.dataset.msGbif === '1') continue;
+                    const processedAncestor = it.closest && it.closest('[data-ms-gbif="1"]');
+                    if (processedAncestor) continue;
                     const txt = it.textContent.trim();
                     // Very simple scientific name heuristic: Capitalized first word and at least one following token
                     if (!/^[A-Z][a-z]+\s+[a-z]+/.test(txt)) continue;
