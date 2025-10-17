@@ -7,6 +7,8 @@
 // @match        https://www.morphosource.org/catalog/media*
 // @match        https://www.morphosource.org/concern/media/*
 // @match        https://www.morphosource.org/organizations/*
+// @match        https://www.morphosource.org/concern/parent/*/media/*
+// @match        https://www.morphosource.org/teams/*
 // @grant        GM_xmlhttpRequest
 // @run-at       document-end
 // ==/UserScript==
@@ -401,6 +403,49 @@
         }
     }
 
+    // Generic inline attach for pages that render the scientific name in arbitrary places
+    function attachExtendedInline(italicEl, info) {
+        try {
+            if (!italicEl || italicEl.dataset && italicEl.dataset.msGbif === '1') return;
+
+            // avoid duplicating: check for nearby inserted node
+            const parent = italicEl.parentElement || italicEl.parentNode;
+            if (!parent) return;
+            if (parent.querySelector && parent.querySelector('.ms-extended-taxonomy-inline')) return;
+
+            // Only show if we have data
+            if (!info.family && !info.order && !info.class) return;
+
+            const container = document.createElement('div');
+            container.className = 'ms-extended-taxonomy-inline';
+            container.style.fontSize = '0.9em';
+            container.style.marginTop = '6px';
+            container.style.color = '#666';
+            container.style.lineHeight = '1.2';
+
+            const parts = [];
+            if (info.family) parts.push(`Family: ${info.family}`);
+            if (info.order) parts.push(`Order: ${info.order}`);
+            if (info.class) parts.push(`Class: ${info.class}`);
+
+            container.innerHTML = parts.join('<br>');
+
+            // Insert after the italic element's containing block if possible
+            // Prefer inserting after the nearest block-level ancestor (p, dd, div)
+            let insertAfter = italicEl;
+            const blockAncestor = italicEl.closest && (italicEl.closest('dd, p, div, li') || italicEl.parentElement);
+            if (blockAncestor && blockAncestor.parentNode) {
+                blockAncestor.parentNode.insertBefore(container, blockAncestor.nextSibling);
+            } else if (italicEl.parentNode) {
+                italicEl.parentNode.insertBefore(container, italicEl.nextSibling);
+            }
+
+            try { italicEl.dataset.msGbif = '1'; } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.error('attachExtendedInline error', e);
+        }
+    }
+
     async function processAll() {
         loadCache();
         // Process search/listing items (li.document)
@@ -555,6 +600,33 @@
             }
         } catch (e) {
             console.error('GBIF processAll table error', e);
+        }
+
+        // Generic inline italic names: some pages render the scientific name inline in dd, p, div etc.
+        try {
+            const italics = Array.from(document.querySelectorAll('i'));
+            for (const it of italics) {
+                try {
+                    if (!it.textContent) continue;
+                    // Skip if already handled
+                    if (it.dataset && it.dataset.msGbif === '1') continue;
+                    const txt = it.textContent.trim();
+                    // Very simple scientific name heuristic: Capitalized first word and at least one following token
+                    if (!/^[A-Z][a-z]+\s+[a-z]+/.test(txt)) continue;
+
+                    // Ensure it's not inside a dt/dd we've already processed (avoid duplication)
+                    const dtAncestor = it.closest && it.closest('dt');
+                    if (dtAncestor) continue;
+
+                    // Fetch and attach inline
+                    const genus = getGenusFromTaxonomy(txt);
+                    if (!genus) continue;
+                    const info = await fetchGbifForName(txt || genus);
+                    attachExtendedInline(it, info);
+                } catch (e) { /* ignore per-italic errors */ }
+            }
+        } catch (e) {
+            console.error('GBIF processAll inline italics error', e);
         }
     }
 
