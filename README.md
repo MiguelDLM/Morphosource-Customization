@@ -18,6 +18,10 @@ Provide small, focused UserScripts that add useful features and UI improvements 
   - Purpose: Enhance taxonomy information and navigation on Morphosource.
   - Functionality (summary): Improves visualization and exploration of the taxonomic hierarchy by adding direct links, shortcuts to filter by taxonomic rank (class, order, family)
 
+- `morphosource-table-sorter.user.js`
+  - Purpose: Enable client-side table sorting on Morphosource dashboard/cart pages.
+  - Functionality (summary): Automatically detects column data types (numbers, dates, text) and enables interactive, stable column sorting by clicking header elements.
+
 Note: The descriptions above are high-level. For exact details about what each script changes on the page (which elements are modified, the added shortcuts, or exact filters), check the headers and comments at the top of each `*.user.js` file.
 
 ## Installation
@@ -30,6 +34,7 @@ Note: The descriptions above are high-level. For exact details about what each s
 
 - For `morphosource-advanced-search.user.js`: Perform searches on Morphosource as usual and look for the additional panel or controls on the search page. 
 - For `morphosource-extended-taxonomy.user.js`: Visit taxonomy pages or collection listings and inspect the enhanced taxonomic tree and added links/controls.
+- For `morphosource-table-sorter.user.js`: Visit the dashboard cart or any list page and click on table headers to sort rows.
 
 ## Contributing
 
@@ -53,6 +58,8 @@ Files in this repository:
 ```
 morphosource-advanced-search.user.js
 morphosource-extended-taxonomy.user.js
+morphosource-table-sorter.user.js
+morphosource-cart-sortable.user.js
 ```
 
 Thanks for improving the Morphosource experience. If you like, I can extract the header comments from each script and add more precise usage examples to this README.
